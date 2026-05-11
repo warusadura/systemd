@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <assert.h>
+#include <stddef.h>
 #include "sd-dlopen.h"
 
 #include "alloc-util.h"
@@ -10,6 +12,7 @@
 #include "fileio.h"
 #include "hexdecoct.h"
 #include "log.h"
+#include "macro-fundamental.h"
 #include "memory-util.h"
 #include "memstream-util.h"
 #include "random-util.h"
@@ -203,6 +206,7 @@ static DLSYM_PROTOTYPE(OSSL_PARAM_BLD_new) = NULL;
 static DLSYM_PROTOTYPE(OSSL_PARAM_BLD_free) = NULL;
 static DLSYM_PROTOTYPE(OSSL_PARAM_BLD_push_octet_string) = NULL;
 static DLSYM_PROTOTYPE(OSSL_PARAM_BLD_push_utf8_string) = NULL;
+static DLSYM_PROTOTYPE(OSSL_PARAM_BLD_push_int) = NULL;
 static DLSYM_PROTOTYPE(OSSL_PARAM_BLD_to_param) = NULL;
 DLSYM_PROTOTYPE(OSSL_PARAM_construct_BN) = NULL;
 DLSYM_PROTOTYPE(OSSL_PARAM_construct_end) = NULL;
@@ -543,6 +547,7 @@ int dlopen_libcrypto(int log_level) {
                         DLSYM_ARG(OSSL_PARAM_BLD_new),
                         DLSYM_ARG(OSSL_PARAM_BLD_push_octet_string),
                         DLSYM_ARG(OSSL_PARAM_BLD_push_utf8_string),
+                        DLSYM_ARG(OSSL_PARAM_BLD_push_int),
                         DLSYM_ARG(OSSL_PARAM_BLD_to_param),
                         DLSYM_ARG(OSSL_PARAM_construct_BN),
                         DLSYM_ARG(OSSL_PARAM_construct_end),
@@ -1117,6 +1122,67 @@ int kdf_kb_hmac_derive(
 
         if (sym_EVP_KDF_derive(ctx, buf, derive_size, params) <= 0)
                 return log_openssl_errors("OpenSSL KDF-KB derive failed");
+
+        *ret = TAKE_PTR(buf);
+
+        return 0;
+}
+
+int hkdf_expand_sha256(
+                const void *key,
+                size_t key_size,
+                const char *info,
+                size_t derive_size,
+                void **ret) {
+
+        int r;
+
+        assert(key);
+        assert(key_size > 0);
+        assert(info);
+        assert(derive_size > 0);
+        assert(ret);
+
+        r = dlopen_libcrypto(LOG_DEBUG);
+        if (r < 0)
+                return r;
+
+        _cleanup_(EVP_KDF_freep) EVP_KDF *kdf = sym_EVP_KDF_fetch(NULL, "HKDF", NULL);
+        if (!kdf)
+                return log_openssl_errors("Failed to create HKDF EVP_KDF");
+
+        _cleanup_(EVP_KDF_CTX_freep) EVP_KDF_CTX *ctx = sym_EVP_KDF_CTX_new(kdf);
+        if (!ctx)
+                return log_openssl_errors("Failed to create HKDF EVP_KDF_CTX");
+
+        _cleanup_(OSSL_PARAM_BLD_freep) OSSL_PARAM_BLD *bld = sym_OSSL_PARAM_BLD_new();
+        if (!bld)
+                return log_openssl_errors("Failed to create OSSL_PARAM_BLD");
+
+        _cleanup_free_ void *buf = malloc(derive_size);
+        if (!buf)
+                return log_oom_debug();
+
+        if (!sym_OSSL_PARAM_BLD_push_utf8_string(bld, OSSL_KDF_PARAM_DIGEST, "SHA256", 0))
+                return log_openssl_errors("Failed to add HKDF OSSL_KDF_PARAM_DIGEST");
+
+        if (!sym_OSSL_PARAM_BLD_push_octet_string(bld, OSSL_KDF_PARAM_KEY, (char*) key, key_size))
+                return log_openssl_errors("Failed to add HKDF OSSL_KDF_PARAM_KEY");
+
+        if (!sym_OSSL_PARAM_BLD_push_octet_string(bld, OSSL_KDF_PARAM_INFO, (char*) info, strlen(info)))
+                return log_openssl_errors("Failed to add HKDF OSSL_KDF_PARAM_INFO");
+
+        int mode = EVP_KDF_HKDF_MODE_EXPAND_ONLY;
+
+        if (!sym_OSSL_PARAM_BLD_push_int(bld, OSSL_KDF_PARAM_MODE, mode))
+                return log_openssl_errors("Failed to add HKDF OSSL_KDF_PARAM_MODE");
+
+        _cleanup_(OSSL_PARAM_freep) OSSL_PARAM *params = sym_OSSL_PARAM_BLD_to_param(bld);
+        if (!params)
+                return log_openssl_errors("Failed to build HKDF OSSL_PARAM");
+
+        if (sym_EVP_KDF_derive(ctx, buf, derive_size, params) <= 0)
+                return log_openssl_errors("HKDF expand failed");
 
         *ret = TAKE_PTR(buf);
 
