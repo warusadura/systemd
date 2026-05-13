@@ -23,8 +23,14 @@ typedef struct HomeSetup {
 
         uint8_t fscrypt_key_descriptor[FS_KEY_DESCRIPTOR_SIZE];
 
+        void *root_key;
+        size_t root_key_size;
+
         void *volume_key;
         size_t volume_key_size;
+
+        void *credentials_key;
+        size_t credentials_key_size;
 
         key_serial_t key_serial;
 

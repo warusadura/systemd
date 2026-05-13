@@ -3,10 +3,13 @@
 #include <linux/loop.h>
 #include <linux/magic.h>
 #include <poll.h>
+#include <stddef.h>
+#include <stdlib.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/xattr.h>
 #include <unistd.h>
+#include "log.h"
 #if HAVE_VALGRIND_MEMCHECK_H
 #include <valgrind/memcheck.h>
 #endif
@@ -1786,9 +1789,11 @@ static int luks_format(
 
         _cleanup_(user_record_unrefp) UserRecord *reduced = NULL;
         _cleanup_(crypt_freep) struct crypt_device *cd = NULL;
+        _cleanup_(erase_and_freep) void *root_key = NULL;
         _cleanup_(erase_and_freep) void *volume_key = NULL;
         struct crypt_pbkdf_type good_pbkdf, minimal_pbkdf;
         _cleanup_free_ char *text = NULL;
+        size_t root_key_size;
         size_t volume_key_size;
         int slot = 0, r;
 
@@ -1803,18 +1808,37 @@ static int luks_format(
 
         cryptsetup_enable_logging(cd);
 
+        root_key_size = volume_key_size = user_record_luks_volume_key_size(hr);
+        root_key = malloc(root_key_size);
+        if (!root_key)
+                return log_oom();
+
+        r = crypto_random_bytes(root_key, root_key_size);
+        if (r < 0)
+                return log_error_errno(r, "Failed to generate root key: %m");
+
+        r = hkdf_expand_sha256(
+                        root_key,
+                        root_key_size,
+                        "volume-key",
+                        volume_key_size,
+                        &volume_key);
+        if (r < 0)
+                return log_error_errno(r, "Failed to derive volume key from root key: %m");
+
+
         /* Normally we'd, just leave volume key generation to libcryptsetup. However, we can't, since we
          * can't extract the volume key from the library again, but we need it in order to encrypt the JSON
          * record. Hence, let's generate it on our own, so that we can keep track of it. */
 
-        volume_key_size = user_record_luks_volume_key_size(hr);
+        /*volume_key_size = user_record_luks_volume_key_size(hr);
         volume_key = malloc(volume_key_size);
         if (!volume_key)
                 return log_oom();
 
         r = crypto_random_bytes(volume_key, volume_key_size);
         if (r < 0)
-                return log_error_errno(r, "Failed to generate volume key: %m");
+                return log_error_errno(r, "Failed to generate volume key: %m");*/
 
         /* Increase the metadata space to 4M, the largest LUKS2 supports */
         r = sym_crypt_set_metadata_size(cd, 4096U*1024U, 0);
