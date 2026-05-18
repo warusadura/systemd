@@ -1882,8 +1882,10 @@ static int luks_format(
                 r = sym_crypt_keyslot_add_by_volume_key(
                                 cd,
                                 slot,
-                                volume_key,
-                                volume_key_size,
+                                root_key,
+                                /*volume_key,*/
+                                root_key_size,
+                                /*volume_key_size,*/
                                 *pp,
                                 strlen(*pp));
                 if (r < 0)
@@ -1892,6 +1894,10 @@ static int luks_format(
                 log_info("Writing password to LUKS keyslot %i completed.", slot);
                 slot++;
         }
+
+        /* wipe root_key here? */
+        explicit_bzero_safe(root_key, root_key_size);
+        log_debug("Root key wiped after deriving volume key.");
 
         r = sym_crypt_activate_by_volume_key(
                         cd,
