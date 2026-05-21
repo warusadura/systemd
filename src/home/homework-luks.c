@@ -316,18 +316,39 @@ static int luks_try_passwords(
         assert(volume_key);
         assert(volume_key_size);
 
+        size_t root_key_size = sym_crypt_get_volume_key_size(cd);
+        if (root_key_size == 0) {
+                log_error_errno(
+                        SYNTHETIC_ERRNO(EINVAL),
+                        "LUKS reports zero volume key size.");
+                return -ENOKEY;
+        }
+
+        _cleanup_(erase_and_freep) void *root_key = malloc(root_key_size);
+        if (!root_key)
+                return log_oom();
+
         STRV_FOREACH(pp, passwords) {
-                size_t vks = *volume_key_size;
+                size_t rks = root_key_size;
 
                 r = sym_crypt_volume_key_get(
                                 cd,
                                 CRYPT_ANY_SLOT,
-                                volume_key,
-                                &vks,
+                                root_key,
+                                &rks,
                                 *pp,
                                 strlen(*pp));
                 if (r >= 0) {
-                        *volume_key_size = vks;
+                        *volume_key_size = rks;
+
+                        r = hkdf_expand_sha256(root_key, rks, "volume-key", rks, &volume_key);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to derive volume key: %m");
+
+                        /* Wipe root_key */
+                        explicit_bzero_safe(root_key, rks);
+                        log_debug("Root key wiped.");
+
                         return 0;
                 }
 
